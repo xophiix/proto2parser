@@ -1,11 +1,11 @@
-# Protoparser
-A package for parsing proto3 files
+# Proto2parser
+A package for parsing proto2 files
 ## Introduction
-The purpose of this package is to parse the .proto file (version 3) into a Python data structure.
+The purpose of this package is to parse the .proto file (version 2) into a Python data structure.
 We use it for code generation or other operations.
 ## How to Use
 ```
-pip install proto-parser
+pip install proto2-parser
 ```
 Output format is as following:
 ```json
@@ -218,6 +218,4 @@ Output format is as following:
   }
 }
 ```
-## Bug Reports and Patches
-If you think you have found a bug, please visit the Protoparser Github page at https://github.com/khadgarmage/protoparser 
-to report an issue, or fix it to push a pull request, thanks.
+
