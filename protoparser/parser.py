@@ -35,6 +35,8 @@ TAGVALUE: IDENT
 RPCNAME: IDENT
 MESSAGETYPE: [ "." ] ( IDENT "." )* MESSAGENAME
 ENUMTYPE: [ "." ] ( IDENT "." )* ENUMNAME
+CAPITALLETTER: "A..Z"
+GROUPNAME: CAPITALLETTER ( LETTER | DECIMALDIGIT | "_" )*
 
 INTLIT    : DECIMALLIT | OCTALLIT | HEXLIT
 DECIMALLIT: ( "1".."9" ) ( DECIMALDIGIT )*
@@ -58,53 +60,57 @@ EMPTYSTATEMENT: ";"
 
 CONSTANT: FULLIDENT | ( [ "-" | "+" ] INTLIT ) | ( [ "-" | "+" ] FLOATLIT ) | STRLIT | BOOLLIT
 
-syntax: "syntax" "=" QUOTE "proto3" QUOTE ";"
+syntax: "syntax" "=" QUOTE "proto2" QUOTE tail
 
-import: "import" [ "weak" | "public" ] STRLIT ";"
+import: "import" [ "weak" | "public" ] STRLIT tail
 
-package: "package" FULLIDENT ";"
+package: "package" FULLIDENT tail
 
-option: "option" OPTIONNAME  "=" CONSTANT ";"
+option: [ comments ] "option" OPTIONNAME  "=" CONSTANT tail
 OPTIONNAME: ( IDENT | "(" FULLIDENT ")" ) ( "." IDENT )*
 
+LABEL: "required" | "optional" | "repeated"
 TYPE: "double" | "float" | "int32" | "int64" | "uint32" | "uint64" | "sint32" | "sint64" | "fixed32" | "fixed64" | "sfixed32" | "sfixed64" | "bool" | "string" | "bytes" | MESSAGETYPE | ENUMTYPE
 FIELDNUMBER: INTLIT
 
-field: [ comments ] TYPE FIELDNAME "=" FIELDNUMBER [ "[" fieldoptions "]" ] TAIL
+field: [ comments ] LABEL TYPE FIELDNAME "=" FIELDNUMBER [ "[" fieldoptions "]" ] tail
 fieldoptions: fieldoption ( ","  fieldoption )*
 fieldoption: OPTIONNAME "=" CONSTANT
-repeatedfield: [ comments ] "repeated" field
 
-oneof: "oneof" ONEOFNAME "{" ( oneoffield | EMPTYSTATEMENT )* "}"
-oneoffield: TYPE FIELDNAME "=" FIELDNUMBER [ "[" fieldoptions "]" ] ";"
+oneof: [ comments ] "oneof" ONEOFNAME "{" ( oneoffield | EMPTYSTATEMENT )* "}"
+oneoffield: TYPE FIELDNAME "=" FIELDNUMBER [ "[" fieldoptions "]" ] tail
+group: [ comments ] LABEL "group" GROUPNAME "=" FIELDNUMBER messagebody
 
-mapfield: [ comments ] "map" "<" KEYTYPE "," TYPE ">" MAPNAME "=" FIELDNUMBER [ "[" fieldoptions "]" ] TAIL
+mapfield: [ comments ] "map" "<" KEYTYPE "," TYPE ">" MAPNAME "=" FIELDNUMBER [ "[" fieldoptions "]" ] tail
 KEYTYPE: "int32" | "int64" | "uint32" | "uint64" | "sint32" | "sint64" | "fixed32" | "fixed64" | "sfixed32" | "sfixed64" | "bool" | "string"
 
-reserved: "reserved" ( ranges | fieldnames ) ";"
+extensions: "extensions" ranges tail
+
+reserved: [ comments ] "reserved" ( ranges | fieldnames ) tail
 ranges: range ( "," range )*
 range:  INTLIT [ "to" ( INTLIT | "max" ) ]
 fieldnames: FIELDNAME ( "," FIELDNAME )*
 
 enum: [ comments ] "enum" ENUMNAME enumbody
-enumbody: "{" ( enumfield | EMPTYSTATEMENT )* "}"
-enumfield: [ COMMENTS ] IDENT "=" INTLIT [ "[" enumvalueoption ( ","  enumvalueoption )* "]" ] TAIL
+enumbody: "{" ( option | enumfield | reserved | EMPTYSTATEMENT )* "}"
+enumfield: [ comments ] IDENT "=" [ "-" ] INTLIT [ "[" enumvalueoption ( ","  enumvalueoption )* "]" ] tail
 enumvalueoption: OPTIONNAME "=" CONSTANT
 
 message: [ comments ] "message" MESSAGENAME messagebody
-messagebody: "{" ( repeatedfield | field | enum | message | option | oneof | mapfield | reserved | EMPTYSTATEMENT )* "}"
+messagebody: "{" ( field | enum | message | extend | extensions | option | oneof | mapfield | reserved | group | EMPTYSTATEMENT )* "}"
+extend: [ comments ] "extend" MESSAGETYPE "{" (field | group)* "}"
 
-googleoption: "option" "(google.api.http)"  "=" "{" [ "post:" CONSTANT [ "body:" CONSTANT ] ] "}" ";"
 service: [ comments ] "service" SERVICENAME "{" ( option | rpc | EMPTYSTATEMENT )* "}"
-rpc: [ comments ] "rpc" RPCNAME "(" [ "stream" ] MESSAGETYPE ")" "returns" "(" [ "stream" ] MESSAGETYPE ")" ( ( "{" ( googleoption | option | EMPTYSTATEMENT )* "}" ) | ";" )
+rpc: [ comments ] "rpc" RPCNAME "(" [ "stream" ] MESSAGETYPE ")" "returns" "(" [ "stream" ] MESSAGETYPE ")" ( ( "{" ( option | EMPTYSTATEMENT )* "}" ) | ";" )
 
-proto:[ comments ] syntax ( import | package | option | topleveldef | EMPTYSTATEMENT )*
-topleveldef: message | enum | service | comments
+proto:[ comments ] [ syntax ] ( import | package | option | topleveldef | EMPTYSTATEMENT )*
+topleveldef: message | enum | extend | service
 
-TAIL: ";" [/[\s|\t]/] [ COMMENT ]
-COMMENT: "//" /.*/ [ "\n" ]
-comments: COMMENT ( COMMENT )*
-COMMENTS: COMMENT ( COMMENT )*
+tail: ";" /[\s|\t]/* [ trail_comment ] NEWLINE
+trail_comment: COMMENT
+COMMENT.1: "//" /[^\n]/*
+BLOCKCOMMENT.2: "/*" /./* "*/"
+comments: (( COMMENT | BLOCKCOMMENT ) NEWLINE )+
 
 %import common.HEXDIGIT
 %import common.DIGIT -> DECIMALDIGIT
@@ -114,36 +120,97 @@ COMMENTS: COMMENT ( COMMENT )*
 %ignore WS
 '''
 
-Comment = typing.NamedTuple('Comment', [('content', str), ('tags', typing.Dict[str, typing.Any])])
-Field = typing.NamedTuple('Field', [('comment', 'Comment'), ('type', str), ('key_type', str), ('val_type', str), ('name', str), ('number', int)])
-Enum = typing.NamedTuple('Enum', [('comment', 'Comment'), ('name', str), ('fields', typing.Dict[str, 'Field'])])
+Tail = typing.NamedTuple('Tail', [('comment', 'Comment')])
+Comment = typing.NamedTuple('Comment', [('content', str), ('tags', typing.Dict[str, typing.Any]), ('ue_specifiers', str)])
+FieldOption = typing.NamedTuple('FieldOption', [('name', str), ('content', str)])
+Field = typing.NamedTuple('Field', [('comment', 'Comment'), ('label', str), ('type', str), ('key_type', str), ('val_type', str), ('name', str), ('number', int), ('options', typing.Dict[str, 'FieldOption']), ('user_data', typing.Dict[str, typing.Any])])
+Enum = typing.NamedTuple('Enum', [('comment', 'Comment'), ('name', str), ('fields', typing.Dict[str, 'Field']), ('user_data', typing.Dict[str, typing.Any])])
+Option = typing.NamedTuple('Option', [('comment', 'Comment'), ('name', str), ('content', str)])
 Message = typing.NamedTuple('Message', [('comment', 'Comment'), ('name', str), ('fields', typing.List['Field']),
-                                        ('messages', typing.Dict[str, 'Message']), ('enums', typing.Dict[str, 'Enum'])])
+                                        ('messages', typing.Dict[str, 'Message']), ('enums', typing.Dict[str, 'Enum']), ('options', typing.Dict[str, 'Option']), ('user_data', typing.Dict[str, typing.Any])])
 Service = typing.NamedTuple('Service', [('name', str), ('functions', typing.Dict[str, 'RpcFunc'])])
 RpcFunc = typing.NamedTuple('RpcFunc', [('name', str), ('in_type', str), ('out_type', str), ('uri', str)])
 ProtoFile = typing.NamedTuple('ProtoFile',
                               [('messages', typing.Dict[str, 'Message']), ('enums', typing.Dict[str, 'Enum']),
                                ('services', typing.Dict[str, 'Service']), ('imports', typing.List[str]),
-                               ('options', typing.Dict[str, str]), ('package', str)])
+                               ('options', typing.Dict[str, str]), ('package', str), ('user_data', typing.Dict[str, typing.Any])])
 
+
+def merge_comments(comments):
+    content = ""
+    tags = {}
+    ue_specifiers = None
+
+    for comment in comments:
+        content += comment.content
+        for tag, value in comment.tags.items():
+            tags[tag] = value
+        if not ue_specifiers and comment.ue_specifiers:
+            ue_specifiers = comment.ue_specifiers
+
+    return Comment(content, tags, ue_specifiers)
+
+def extrat_comments(tokens):
+    comments = []
+    for token in tokens:
+        if isinstance(token, Comment):
+            comments.append(token)
+        elif isinstance(token, Tail):
+            if token.comment:
+                comments.append(token.comment)
+        elif isinstance(token, Token):                
+            if token.type == "COMMENT":
+                comments.append(Comment(token.value, {}, None))  
+
+    return merge_comments(comments)
 
 class ProtoTransformer(Transformer):
     '''Converts syntax tree token into more easily usable namedtuple objects'''
-
     def message(self, tokens):
         '''Returns a Message namedtuple'''
-        comment = Comment("", {})
+        comment = Comment("", {}, None)     
         if len(tokens) < 3:
             name_token, body = tokens
         else:
             comment, name_token, body = tokens
-        return Message(comment, name_token.value, *body)
+        return Message(comment, name_token.value, *body, {})
+
+    def fieldoption(self, tokens):
+        name = Token("TYPE", "")
+        content = Token("", "")
+        for token in tokens:            
+            if isinstance(token, Token):
+                if token.type == "OPTIONNAME":
+                    name.value = token.value.strip("()")
+                if token.type == "CONSTANT":
+                    content = token
+        
+        return FieldOption(name, content)
+
+    def enumvalueoption(self, tokens):
+        return self.fieldoption(tokens)
+
+    def option(self, tokens):
+        name = Token("TYPE", "")
+        content = Token("", "")
+        comment = extrat_comments(tokens)
+        for token in tokens:
+            if isinstance(token, Comment):
+                comment = token
+            elif isinstance(token, Token):
+                if token.type == "OPTIONNAME":
+                    name.value = token.value.strip("()")
+                if token.type == "CONSTANT":
+                    content = token
+        
+        return Option(comment, name, content)
 
     def messagebody(self, items):
         '''Returns a tuple of message body namedtuples'''
         messages = {}
         enums = {}
         fields = []
+        options = {}
         for item in items:
             if isinstance(item, Message):
                 messages[item.name] = item
@@ -151,47 +218,55 @@ class ProtoTransformer(Transformer):
                 enums[item.name] = item
             elif isinstance(item, Field):
                 fields.append(item)
-        return fields, messages, enums
+            elif isinstance(item, Option):
+                options[item.name] = item
 
-    def field(self, tokens):
-        '''Returns a Field namedtuple'''
-        comment = Comment("", {})
-        type = Token("TYPE", "")
-        fieldname = Token("FIELDNAME", "")
-        fieldnumber = Token("FIELDNUMBER", "")
+        return fields, messages, enums, options
+
+    def tail(self, tokens):
+        comment = None
         for token in tokens:
             if isinstance(token, Comment):
                 comment = token
+
+        return Tail(comment)
+
+    def field(self, tokens):
+        '''Returns a Field namedtuple'''        
+        type = Token("TYPE", "")
+        label = Token("LABEL", "")
+        fieldname = Token("FIELDNAME", "")
+        fieldnumber = Token("FIELDNUMBER", "")
+        options = {}
+        for token in tokens:            
+            if isinstance(token, Tree) and token.data == 'fieldoptions':
+                for fieldoption in token.children:
+                    if isinstance(fieldoption, FieldOption):
+                        options[fieldoption.name.value] = fieldoption
             elif isinstance(token, Token):
                 if token.type == "TYPE":
                     type = token
+                elif token.type == "LABEL":
+                    label = token
                 elif token.type == "FIELDNAME":
                     fieldname = token
                 elif token.type == "FIELDNUMBER":
-                    fieldnumber = token
-                elif token.type == "COMMENT":
-                    comment = Comment(token.value, {})
-        return Field(comment, type.value, type.value, type.value, fieldname.value, int(fieldnumber.value))
+                    fieldnumber = token                
 
-    def repeatedfield(self, tokens):
-        '''Returns a Field namedtuple'''
-        comment = Comment("", {})
-        if len(tokens) < 2:
-            field = tokens[0]
-        else:
-            comment, field = tuple(tokens)
-        return Field(comment, 'repeated', field.type, field.type, field.name, field.number)
+        return Field(extrat_comments(tokens), label.value, type.value, type.value, type.value, fieldname.value, int(fieldnumber.value), options, {})
 
     def mapfield(self, tokens):
-        '''Returns a Field namedtuple'''
-        comment = Comment("", {})
+        '''Returns a Field namedtuple'''        
         val_type = Token("TYPE", "")
         key_type = Token("KEYTYPE", "")
         fieldname = Token("MAPNAME", "")
         fieldnumber = Token("FIELDNUMBER", "")
-        for token in tokens:
-            if isinstance(token, Comment):
-                comment = token
+        options = {}
+        for token in tokens:           
+            if isinstance(token, Tree) and token.data == 'fieldoptions':
+                for fieldoption in token.children:
+                    if isinstance(fieldoption, FieldOption):
+                        options[token.name] = token 
             elif isinstance(token, Token):
                 if token.type == "TYPE":
                     val_type = token
@@ -200,20 +275,34 @@ class ProtoTransformer(Transformer):
                 elif token.type == "MAPNAME":
                     fieldname = token
                 elif token.type == "FIELDNUMBER":
-                    fieldnumber = token
-                elif token.type == "COMMENT":
-                    comment = Comment(token.value, {})
-        return Field(comment, 'map', key_type.value, val_type.value, fieldname.value, int(fieldnumber.value))
+                    fieldnumber = token                
+        return Field(extrat_comments(tokens), '', 'map', key_type.value, val_type.value, fieldname.value, int(fieldnumber.value), options, {})
 
     def comments(self, tokens):
         '''Returns a Tag namedtuple'''
         comment = ''
         tags = {}
+        ue_specifier = None
         for token in tokens:
-            comment += token
-            if token.find('@') < 0:
+            if token is None:
                 continue
-            kvs = token.strip(" /\n").split('@')
+
+            token_str = ""
+            if isinstance(token, Token):
+                token_str = token.value
+            else:
+                token_str = token
+
+            if token_str.find("//") >= 0:
+                comment_content = token_str.replace("//", "").strip(" /\n")
+                if comment_content.startswith("UPROPERTY") or comment_content.startswith("UCLASS") or comment_content.startswith("UENUM"):
+                    ue_specifier = comment_content
+                    continue
+
+            comment += token_str + "\n"
+            if token_str.find('@') < 0:
+                continue
+            kvs = token_str.strip(" /\n").split('@')
             for kv in kvs:
                 kv = kv.strip(" /\n")
                 if not kv:
@@ -226,16 +315,22 @@ class ProtoTransformer(Transformer):
                     tags[key] = tmp[1].lower()
                 else:
                     tags[key] = True
-        return Comment(comment, tags)
+        return Comment(comment, tags, ue_specifier)
+    
+    def trail_comment(self, tokens):        
+        if len(tokens) > 0:
+            return Comment(tokens[0].value, {}, None)
+        else:
+            return Comment("", {}, None)
 
     def enum(self, tokens):
         '''Returns an Enum namedtuple'''
-        comment = Comment("", {})
+        comment = Comment("", {}, None)
         if len(tokens) < 3:
             name, fields = tokens
         else:
             comment, name, fields = tokens
-        return Enum(comment, name.value, fields)
+        return Enum(comment, name.value, fields, {})
 
     def enumbody(self, tokens):
         '''Returns a sequence of enum identifiers'''
@@ -243,20 +338,20 @@ class ProtoTransformer(Transformer):
         for tree in tokens:
             if tree.data != 'enumfield':
                 continue
-            comment = Comment("", {})
             name = Token("IDENT", "")
             value = Token("INTLIT", "")
-            for token in tree.children:
-                if isinstance(token, Comment):
-                    comment = token
+            options = {}
+            for token in tree.children:                
+                if isinstance(token, Tree) and token.data == 'enumvalueoption':
+                    for enumvalueoption in token.children:
+                        if isinstance(enumvalueoption, FieldOption):
+                            options[token.name] = token
                 elif isinstance(token, Token):
                     if token.type == "IDENT":
                         name = token
                     elif token.type == "INTLIT":
                         value = token
-                    elif token.type == "COMMENTS":
-                        comment = Comment(token.value, {})
-            enumitems.append(Field(comment, 'enum', 'enum', 'enum', name.value, value.value))
+            enumitems.append(Field(extrat_comments(tree.children), '', 'enum', 'enum', 'enum', name.value, value.value, options, {}))
         return enumitems
 
     def service(self, tokens):
@@ -310,16 +405,17 @@ def _recursive_to_dict(obj):
     return _dict
 
 
-def parse_from_file(file: str):
-    with open(file, 'r') as f:
+def parse_from_file(file: str, encoding: str="utf-8"):
+    with open(file, 'r', encoding=encoding) as f:
         data = f.read()
     if data:
         return parse(data)
 
 
 def parse(data: str):
-    parser = Lark(BNF, start='proto', parser='lalr')
+    parser = Lark(BNF, start='proto', parser='earley', debug=True)    
     tree = parser.parse(data)
+    print(tree.pretty("\t"))
     trans_tree = ProtoTransformer().transform(tree)
     enums = {}
     messages = {}
@@ -328,7 +424,8 @@ def parse(data: str):
     import_tree = trans_tree.find_data('import')
     for tree in import_tree:
         for child in tree.children:
-            imports.append(child.value.strip('"'))
+            if isinstance(child, Token):
+                imports.append(child.value.strip('"'))
     options = {}
     option_tree = trans_tree.find_data('option')
     for tree in option_tree:
@@ -348,15 +445,15 @@ def parse(data: str):
                 enums[child.name] = child
             if isinstance(child, Service):
                 services[child.name] = child
-    return ProtoFile(messages, enums, services, imports, options, package)
+    return ProtoFile(messages, enums, services, imports, options, package, {})
 
 
 def serialize2json(data):
     return json.dumps(_recursive_to_dict(parse(data)))
 
 
-def serialize2json_from_file(file: str):
-    with open(file, 'r') as f:
+def serialize2json_from_file(file: str, encoding: str="utf-8"):
+    with open(file, 'r', encoding=encoding) as f:
         data = f.read()
     if data:
-        return json.dumps(_recursive_to_dict(parse(data)))
+        return json.dumps(_recursive_to_dict(parse(data)), indent=4)
